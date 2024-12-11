@@ -5,13 +5,18 @@ library(dplyr)
 library(janitor)
 library(ggplot2)
 
-# PARAMETERS
+# Parameters
 
 prod_URL <- "https://www.fao.org/fishery/static/Data/GlobalProduction_2024.1.0.zip" # URL of the FAO production data
 asfis_URL <- "https://www.fao.org/fishery/static/ASFIS/ASFIS_sp.zip" # URL of the ASFIS database of species names
+asfis_filename <- "ASFIS_sp_2024.csv"
 number_species <- 200 # number of top species to create charts for
 capture_color = "#377eb8"
 aquaculture_color = "#4daf4a"
+
+# Load functions
+
+source("functions.R")
 
 # Get production data from FAO's server
 
@@ -37,7 +42,7 @@ unlink(temp)
 
 temp <- tempfile()
 download.file(asfis_URL, temp)
-species_multilingual <- read_csv(unz(temp, "ASFIS_sp_2023.txt")) %>%
+species_multilingual <- read_csv(unz(temp, asfis_filename)) %>%
   clean_names() %>%
   rename(english_name_asfis = english_name) %>%
   select(alpha3_code, english_name_asfis, french_name, spanish_name, arabic_name, chinese_name, russian_name)
@@ -74,54 +79,28 @@ prod_raw <- data %>%
 
 # Create aquaculture and capture plots
 
-for (i in unique(prod_raw$production_source_name)) {
+for (i in unique(prod_raw$unit)) {
  
-  top_species <- prod_raw %>%
-    filter(unit == "Tonnes - live weight", year == max(year), production_source_name == i) %>%
-    group_by(english_name) %>%
-    summarize(value = sum(value)) %>%
-    arrange(desc(value)) %>%
-    head(number_species) %>%
-    pull(english_name)
-  
-  for (j in top_species[!is.na(top_species)]) {
+  for (j in unique(prod_raw$production_source_name)) {
     
-    max_value <- prod_raw %>%
-      filter(unit == "Tonnes - live weight", production_source_name == i, english_name == j) %>%
-      group_by(english_name, year) %>%
-      summarize(value = sum(value)) %>%
-      ungroup() %>%
-      summarize(value = max(value)) %>%
-      pull()
+    top_species <- get_top_species(unit_selection = i, prod_source_selection = j, species_name_language = "english_name")
     
-    plot_data <- prod_raw %>%
-      filter(unit == "Tonnes - live weight", production_source_name == i, english_name == j) %>%
-      group_by(english_name, scientific_name, year) %>%
-      summarize(value = sum(value)) %>%
-      {if(max_value > 10^6) mutate(., value = value/10^6) else mutate(., value = value/10^3)}
-    
-    image <- ggplot(data = plot_data, aes(x = year, y = value)) +
-      geom_col(fill = ifelse(i == "Capture production", capture_color, aquaculture_color)) +
-      scale_x_continuous(breaks = seq(min(plot_data$year), max(plot_data$year), 5), expand = c(0, 0.2)) +
-      scale_y_continuous(expand = c(0, 0)) +
-      theme_bw() +
-      theme(
-        text = element_text(size = 17),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        panel.grid.major.x = element_blank(), 
-        panel.grid.minor.x = element_blank(), 
-        axis.title.x = element_blank(), 
-        axis.title.y = element_blank(),
-        axis.ticks.y = element_blank()
+    for (k in top_species[!is.na(top_species)]) {
+      
+      max_value <- get_max_value(unit_selection = i, prod_source_selection = j, species_name_language = "english_name", selected_species = k)
+      
+      plot_data <- get_plot_data(unit_selection = i, prod_source_selection = j, species_name_language = "english_name", selected_species = k)
+      
+      image <- generate_chart(data = plot_data)
+      
+      ggsave(file = paste0("./", i,"/", j ,"/", match(k, top_species), "_", tolower(k), "_", tolower(j), "_", ifelse(max_value > 10^6, "million ", "thousand "), ifelse(k == "Tonnes - live weight", "tonnes ", "individuals "), min(plot_data$year), "-", max(plot_data$year), ".svg"), plot = image, width = 10, height = 6)
+      
+      cat(
+        paste0("Global ", tolower(j), " of ", k, " (''", unique(plot_data$scientific_name),"'')"," in ", ifelse(max_value > 10^6, "millions of ", "thousands of "), ifelse(k == "Tonnes - live weight", "tonnes from ", "individuals from "), min(plot_data$year), " to ", max(plot_data$year), ", as reported by the [[Food and Agriculture Organization|FAO]]<ref>{{Cite web |title=Fisheries and Aquaculture - Global Production |url=https://www.fao.org/fishery/en/collection/global_production?lang=en |access-date=", Sys.Date(), "|website=Food and Agriculture Organization of the United Nations (FAO)}}</ref>"),
+        file = paste0("./", i,"/", j ,"/", match(k, top_species), " ", tolower(k), ".txt")
       )
-    
-    ggsave(file = paste0("./", i ,"/", match(j, top_species), "_", tolower(j), "_", tolower(i), "_", ifelse(max_value > 10^6, "million tonnes, ", "thousand tonnes, "), min(plot_data$year), "-", max(plot_data$year), ".svg"), plot = image, width = 10, height = 6)
-    
-    cat(
-      paste0("Global ", tolower(i), " of ", j, " (''", unique(plot_data$scientific_name),"'')"," in ", ifelse(max_value > 10^6, "million tonnes from ", "thousand tonnes from "), min(plot_data$year), " to ", max(plot_data$year), ", as reported by the [[Food and Agriculture Organization|FAO]]. Source: [https://www.fao.org/fishery/en/fishstat FAO]."),
-      file = paste0("./", i ,"/", match(j, top_species), " ", tolower(j), ".txt")
-    )
+      
+    }
     
   }
    
@@ -129,47 +108,23 @@ for (i in unique(prod_raw$production_source_name)) {
 
 # Create total production plots
 
-top_species <- prod_raw %>%
-  filter(unit == "Tonnes - live weight", year == max(year)) %>%
-  group_by(english_name) %>%
-  summarize(value = sum(value)) %>%
-  arrange(desc(value)) %>%
-  head(number_species) %>%
-  pull(english_name)
+top_species <- get_top_species(unit_selection = "Tonnes - live weight", 
+                           prod_source_selection = c("Capture production", "Aquaculture production"), 
+                           species_name_language = "english_name")
 
 for (k in top_species[!is.na(top_species)]) {
   
-  max_value <- prod_raw %>%
-    filter(unit == "Tonnes - live weight", english_name == k) %>%
-    group_by(english_name, year) %>%
-    summarize(value = sum(value)) %>%
-    ungroup() %>%
-    summarize(value = max(value)) %>%
-    pull()
+  max_value <- get_max_value(unit_selection = "Tonnes - live weight", 
+            prod_source_selection = c("Capture production", "Aquaculture production"), 
+            species_name_language = "english_name", 
+            selected_species = k)
   
-  plot_data <- prod_raw %>%
-    filter(unit == "Tonnes - live weight", english_name == k) %>%
-    group_by(english_name, scientific_name, production_source_name, year) %>%
-    summarize(value = sum(value)) %>%
-    {if(max_value > 10^6) mutate(., value = value/10^6) else mutate(., value = value/10^3)}
+  plot_data <- get_plot_data(unit_selection = "Tonnes - live weight", 
+                prod_source_selection = c("Capture production", "Aquaculture production"), 
+                species_name_language = "english_name", 
+                selected_species = k)
   
-  image <- ggplot(data = plot_data, aes(x = year, y = value)) +
-    geom_bar(fill = production_source_name, position = "stack", stat = "identity") +
-    scale_x_continuous(breaks = seq(min(plot_data$year), max(plot_data$year), 5), expand = c(0, 0.2)) +
-    scale_y_continuous(expand = c(0, 0)) + 
-    scale_fill_manual(breaks = c("Capture production", "Aquaculture production"), values=c(capture_color, aquaculture_color)) +
-    theme_bw() +
-    theme(
-      text = element_text(size = 17),
-      panel.border = element_blank(),
-      panel.background = element_blank(),
-      panel.grid.major.x = element_blank(), 
-      panel.grid.minor.x = element_blank(), 
-      axis.title.x = element_blank(), 
-      axis.title.y = element_blank(),
-      axis.ticks.y = element_blank(),
-      legend.position = "none"
-    )
+  image <- generate_chart(data = plot_data)
   
   ggsave(file = paste0("./", "Total production" ,"/", match(k, top_species), "_", tolower(k), "_", tolower("Total production"), "_", ifelse(max_value > 10^6, "million tonnes", "thousand tonnes"), "_", min(plot_data$year), "-", max(plot_data$year), ".svg"), plot = image, width = 10, height = 6)
   
